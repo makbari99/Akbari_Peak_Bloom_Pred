@@ -22,7 +22,7 @@ library(stringr)
 library(rnoaa)
 library(mice)
 library(VIM)
-library(catboost)
+library(forecast)
 ```
 
 ```{r}
@@ -78,7 +78,8 @@ temp_dat = historic_temperatures[historic_temperatures$season=="Spring",-3]
 temp_dat = temp_dat[!(temp_dat$location=="vancouver"),]
 ```
 
-```{r}
+```{r} 
+#merging temp with rest of data
 full_cherry = merge(cherry2, temp_dat, by.x = c("location","bloom_year"), by.y = c("location","year"), all.x = TRUE, all.y = TRUE)
 full_cherry = full_cherry[,c(1:5,10,6:9)]
 full_cherry = full_cherry[full_cherry$bloom_year>=1950,]
@@ -97,43 +98,35 @@ VIM::aggr(full_cherry)
 ```
 
 ```{r}
+#visualization of data
+plot(full_cherry$bloom_doy~full_cherry$tmax_avg)
+
+```
+
+```{r}
+#using ARIMA to forecast predictions for next decade
 nrow(full_cherry)
 full_cherry = full_cherry[order(full_cherry$location),-c(7)]
-train = full_cherry[c(1:62,74:135,146:207),]
-validation = full_cherry[c(63:73,136:145,208:216),]
 
 kyoto_model = full_cherry[full_cherry$location=="kyoto",]
-mod = ets(kyoto_model[,9]) 
-library(forecast)
-test = forecast(mod, h=10)
-
-preds_ky = data.frame(test)
+fit_ky_arima = arima(kyoto_model[,9])
+preds_ky = forecast(fit_ky_arima,h=10)
 
 liestal_model = full_cherry[full_cherry$location=="liestal",]
-mod1 = ets(liestal_model[,9]) 
-library(forecast)
-test1 = forecast(mod, h=10)
-
-preds_li = data.frame(test1)
+fit_li_arima = arima(liestal_model[,9]) 
+preds_li = forecast(fit_li_arima,h=10)
 
 washingtondc_model = full_cherry[full_cherry$location=="washingtondc",]
-mod2 = ets(washingtondc_model[,9]) 
-library(forecast)
-test2 = forecast(mod2, h=10)
+fit_wa_arima = arima(washingtondc_model[,9]) 
+preds_wa = forecast(fit_wa_arima, h=10)
 
-preds_wa = data.frame(test2)
-
-rename(preds_ky, "kyoto" = "Point.Forecast")
-rename(preds_li, "liestal" = "Point.Forecast")
-rename(preds_wa, "washingtondc" = "Point.Forecast")
-
-preds_final = data.frame(year=c(2022,2023,2024,2025,2026,2027,2028,2029,2030,2031),kyoto=preds_ky$Point.Forecast, liestal=preds_li$Point.Forecast, washingtondc=preds_wa$Point.Forecast)
+preds_final = data.frame(year=c(2022,2023,2024,2025,2026,2027,2028,2029,2030,2031),kyoto=preds_ky$mean,liestal=preds_li$mean, washingtondc=preds_wa$mean)
 preds_final$kyoto = round(preds_final$kyoto)
 preds_final$liestal = round(preds_final$liestal)
 preds_final$washingtondc = round(preds_final$washingtondc)
+#writing a loop to take the combined average from the other sites to forecast vancouver
 preds_final$vancouver = NA
 for (i in 1:nrow(preds_final)) {
-  print(i)
   preds_final$vancouver[i] = round((preds_final$kyoto[i]+preds_final$liestal[i]+preds_final$washingtondc[i])/3)
 }
 write.csv(preds_final, file = "C:\\Users\\admin\\Desktop\\Course Work\\Peak Bloom Predictions\\Akbari_Peak_Bloom_Pred\\Akbari_Predictions.txt", row.names = FALSE)
