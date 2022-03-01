@@ -8,3 +8,133 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+We need to predict doy for Kyoto (Japan), Liestal-Weideli (Switzerland), Washington D.C. (USA), Vancouver BC (Canada)
+
+1) Lets begin with some research on cherry trees and what makes them bloom. 
+
+We need location, Latitude, Longitude, Altitude, Date, doy, and Temperture for each of the locations (minus Vancouver)
+
+
+```{r}
+#packages used
+library(tidyverse)
+library(stringr)
+library(rnoaa)
+library(mice)
+library(VIM)
+library(catboost)
+```
+
+```{r}
+#Getting the dataset for historic cherry tree bloom data
+cherry <- read.csv("peak-bloom-prediction/data/washingtondc.csv") %>% 
+  bind_rows(read.csv("peak-bloom-prediction/data/liestal.csv")) %>% 
+  bind_rows(read.csv("peak-bloom-prediction/data/kyoto.csv"))
+```
+We are going to use data from 1950 and onward. 
+
+First we need to do some feature engineering to get the dataset to look how we want.
+
+```{r}
+cherry2 = rename(cherry, "bloom_year" = "year")
+cherry2$bloom_year = as.integer(str_sub(cherry$bloom_date, 1,4))
+cherry2$bloom_month = as.integer(str_sub(cherry$bloom_date, 6,7))
+cherry2$bloom_day = as.integer(str_sub(cherry$bloom_date, 9))
+cherry2 = cherry2[,c(1:4,6,8,9,5,7)]
+```
+
+```{r}
+#Getting historic temperture using function from demo
+stations <- ghcnd_stations()
+
+get_temperature <- function (stationid) {
+  ghcnd_search(stationid = stationid, var = c("tmax"), 
+               date_min = "1880-01-01", date_max = "2022-01-31")[[1]] %>%
+  mutate(year = as.integer(format(date, "%Y")),
+         month = as.integer(strftime(date, '%m')) %% 12, # make December "0"
+         season = cut(month, breaks = c(0, 2, 5, 8, 11),
+                      include.lowest = TRUE,
+                      labels = c("Winter", "Spring", "Summer", "Fall")),
+         year = if_else(month == 0, year + 1L, year)) %>%
+  group_by(year, season) %>%
+  summarize(tmax_avg = mean(tmax, na.rm = TRUE))
+}
+
+historic_temperatures <-
+  tibble(location = "washingtondc", get_temperature("USC00186350")) %>%
+  bind_rows(tibble(location = "liestal", get_temperature("GME00127786"))) %>%
+  bind_rows(tibble(location = "kyoto", get_temperature("JA000047759"))) %>%
+  bind_rows(tibble(location = "vancouver", get_temperature("CA001108395")))
+
+historic_temperatures %>%
+  ggplot() + 
+  aes(year, tmax_avg) + 
+  geom_line() +
+  xlim(1950, 2031) +
+  labs(x = "Year", y = "Average maximum temperature (1/10 °C)") +
+  facet_grid(factor(season) ~ str_to_title(location))
+
+temp_dat = historic_temperatures[historic_temperatures$season=="Spring",-3]
+temp_dat = temp_dat[!(temp_dat$location=="vancouver"),]
+```
+
+```{r}
+full_cherry = merge(cherry2, temp_dat, by.x = c("location","bloom_year"), by.y = c("location","year"), all.x = TRUE, all.y = TRUE)
+full_cherry = full_cherry[,c(1:5,10,6:9)]
+full_cherry = full_cherry[full_cherry$bloom_year>=1950,]
+full_cherry$location = as.factor(full_cherry$location)
+```
+
+```{r}
+#imputing missing data
+matrixplot(full_cherry)
+VIM::aggr(full_cherry)
+
+fcs = mice(full_cherry[,c(1:6,8:10)], m=5, method="pmm")
+train_comp = complete(fcs,2)
+full_cherry$tmax_avg = train_comp$tmax_avg
+VIM::aggr(full_cherry)
+```
+
+```{r}
+nrow(full_cherry)
+full_cherry = full_cherry[order(full_cherry$location),-c(7)]
+train = full_cherry[c(1:62,74:135,146:207),]
+validation = full_cherry[c(63:73,136:145,208:216),]
+
+kyoto_model = full_cherry[full_cherry$location=="kyoto",]
+mod = ets(kyoto_model[,9]) 
+library(forecast)
+test = forecast(mod, h=10)
+
+preds_ky = data.frame(test)
+
+liestal_model = full_cherry[full_cherry$location=="liestal",]
+mod1 = ets(liestal_model[,9]) 
+library(forecast)
+test1 = forecast(mod, h=10)
+
+preds_li = data.frame(test1)
+
+washingtondc_model = full_cherry[full_cherry$location=="washingtondc",]
+mod2 = ets(washingtondc_model[,9]) 
+library(forecast)
+test2 = forecast(mod2, h=10)
+
+preds_wa = data.frame(test2)
+
+rename(preds_ky, "kyoto" = "Point.Forecast")
+rename(preds_li, "liestal" = "Point.Forecast")
+rename(preds_wa, "washingtondc" = "Point.Forecast")
+
+preds_final = data.frame(year=c(2022,2023,2024,2025,2026,2027,2028,2029,2030,2031),kyoto=preds_ky$Point.Forecast, liestal=preds_li$Point.Forecast, washingtondc=preds_wa$Point.Forecast)
+preds_final$kyoto = round(preds_final$kyoto)
+preds_final$liestal = round(preds_final$liestal)
+preds_final$washingtondc = round(preds_final$washingtondc)
+preds_final$vancouver = NA
+for (i in 1:nrow(preds_final)) {
+  print(i)
+  preds_final$vancouver[i] = round((preds_final$kyoto[i]+preds_final$liestal[i]+preds_final$washingtondc[i])/3)
+}
+write.csv(preds_final, file = "C:\\Users\\admin\\Desktop\\Course Work\\Peak Bloom Predictions\\Akbari_Peak_Bloom_Pred\\Akbari_Predictions.txt", row.names = FALSE)
+```
